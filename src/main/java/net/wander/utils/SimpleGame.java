@@ -3,6 +3,9 @@ package net.wander.utils;
 import javax.swing.*;
 import java.awt.*;
 import java.awt.image.BufferStrategy;
+import java.io.IOException;
+import java.util.HashMap;
+import java.util.Map;
 
 public abstract class SimpleGame extends Canvas implements Runnable {
 
@@ -13,11 +16,63 @@ public abstract class SimpleGame extends Canvas implements Runnable {
     private final int height;
     private Thread gameThread;
 
+    // ===== СЦЕНЫ =====
+    private final Map<String, Scene> scenes = new HashMap<>();
+    private Scene currentScene;
+
     public SimpleGame(String title, int width, int height) {
         this.title = title;
         this.width = width;
         this.height = height;
     }
+
+    // --- работа со сценами ---
+
+    /** Зарегистрировать сцену в игре. Первая добавленная сцена может стать текущей. */
+    public void addScene(Scene scene) {
+        if (scene == null) return;
+        scene.setGame(this);
+        scenes.put(scene.getName(), scene);
+
+        // если сцена ещё не выбрана, первая добавленная становится активной
+        if (currentScene == null) {
+            currentScene = scene;
+            currentScene.onEnter();
+        }
+    }
+
+    /** Получить сцену по имени. */
+    public Scene getScene(String name) {
+        return scenes.get(name);
+    }
+
+    /** Текущая активная сцена. */
+    public Scene getCurrentScene() {
+        return currentScene;
+    }
+
+    /** Переход на сцену по имени. */
+    public void gotoScene(String name) {
+        Scene next = scenes.get(name);
+        if (next == null) {
+            throw new IllegalArgumentException("Scene not found: " + name);
+        }
+        gotoScene(next);
+    }
+
+    /** Переход на сцену по ссылке. */
+    public void gotoScene(Scene next) {
+        if (next == null) return;
+        if (next == currentScene) return;
+
+        if (currentScene != null) {
+            currentScene.onExit();
+        }
+        currentScene = next;
+        currentScene.onEnter();
+    }
+
+    // ==========================
 
     public void start() {
         if (running) return;
@@ -33,10 +88,11 @@ public abstract class SimpleGame extends Canvas implements Runnable {
         frame.setLocationRelativeTo(null);
         frame.setVisible(true);
 
-        // ВАЖНО: включить фокус и навесить слушатель клавы
+        // Input
         setFocusable(true);
         requestFocus();
         addKeyListener(new Input());
+        Mouse.attach(this);
 
         gameThread = new Thread(this, "GameThread");
         gameThread.start();
@@ -53,15 +109,21 @@ public abstract class SimpleGame extends Canvas implements Runnable {
 
         long last = System.nanoTime();
 
-        init(); // твой метод
+        init();
+
+        if (currentScene == null) {
+            throw new IllegalStateException("Game must have at least one Scene. Call addScene() in init().");
+        }
 
         while (running) {
             long now = System.nanoTime();
             double dt = (now - last) / 1_000_000_000.0;
             last = now;
 
-            update(dt);     // твоя логика
-            renderFrame();  // отрисовка
+            Mouse.nextFrame();   // сброс "нажато в этом кадре" перед логикой
+
+            update(dt);
+            renderFrame();
 
             long sleepTime = (long) (frameTime - (System.nanoTime() - now));
             if (sleepTime > 0) {
@@ -72,34 +134,46 @@ public abstract class SimpleGame extends Canvas implements Runnable {
         }
 
         cleanup();
-        if (frame != null) {
-            frame.dispose();
-        }
+        if (frame != null) frame.dispose();
     }
 
     private void renderFrame() {
         BufferStrategy bs = getBufferStrategy();
         if (bs == null) {
-            // создаём двойную буферизацию один раз
             createBufferStrategy(2);
             return;
         }
 
         Graphics2D g = (Graphics2D) bs.getDrawGraphics();
 
-        // очистка фона
         g.setColor(Color.BLACK);
         g.fillRect(0, 0, width, height);
 
-        render(g); // твой метод
+        render(g);
 
         g.dispose();
         bs.show();
         Toolkit.getDefaultToolkit().sync();
     }
 
+    // ==== методы, которые ты можешь переопределять ====
+
+    /** Вызывается один раз перед игровым циклом. Здесь добавляешь сцены. */
     protected abstract void init();
-    protected abstract void update(double dt);
-    protected abstract void render(Graphics2D g);
+
+    /** Обновление игры. По умолчанию обновляет текущую сцену. */
+    protected void update(double dt) {
+        if (currentScene != null) {
+            currentScene.update(dt);
+        }
+    }
+
+    /** Отрисовка игры. По умолчанию рисует текущую сцену. */
+    protected void render(Graphics2D g) {
+        if (currentScene != null) {
+            currentScene.render(g);
+        }
+    }
+
     protected void cleanup() {}
 }
